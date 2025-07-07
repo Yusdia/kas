@@ -1,82 +1,61 @@
-const puppeteer = require('puppeteer');
-const axios = require('axios');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const RecaptchaPlugin = require('puppeteer-extra-plugin-recaptcha');
 const fs = require('fs');
 
-// CONFIG
-const SITE_URL = 'https://faucet.zealousswap.com/';
-const CAPTCHA_API_KEY = '7fa9fe01d6e280530733092087f3d2bd';
-const DELAY_MS = 10000; // jeda antar klaim (10 detik)
+// Konfigurasi
+const API_KEY = '7fa9fe01d6e280530733092087f3d2bd';
+const URL_FAUCET = 'https://faucet.zealousswap.com/'; // Ganti dengan faucet asli
+const WALLET_LIST = [
+  '0xf2daae1a26c9a0dbaf8e8640f78172af6f75b28c',
+  '0xWalletAddress2',
+  '0xWalletAddress3'
+];
 
-// Fungsi delay
-const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+// Plugins
+puppeteer.use(StealthPlugin());
+puppeteer.use(RecaptchaPlugin({
+  provider: {
+    id: '2captcha',
+    token: API_KEY
+  },
+  visualFeedback: true
+}));
 
-// Fungsi solve hCaptcha dengan 2Captcha
-async function solveCaptcha(sitekey, pageurl) {
-  console.log('[*] Mengirim captcha ke 2captcha...');
-  const { data } = await axios.post(`http://2captcha.com/in.php?key=${CAPTCHA_API_KEY}&method=hcaptcha&sitekey=${sitekey}&pageurl=${pageurl}&json=1`);
-  const captchaId = data.request;
-
-  for (let i = 0; i < 24; i++) {
-    await delay(5000);
-    const res = await axios.get(`http://2captcha.com/res.php?key=${CAPTCHA_API_KEY}&action=get&id=${captchaId}&json=1`);
-    if (res.data.status === 1) {
-      console.log('[+] Captcha berhasil diselesaikan!');
-      return res.data.request;
-    }
-  }
-
-  throw new Error('Gagal menyelesaikan captcha.');
-}
-
-// Fungsi utama klaim
+// Fungsi utama
 async function claimFaucet(wallet) {
-  console.log(`\n[>] Memulai klaim untuk wallet: ${wallet}`);
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ['--no-sandbox'],
+    executablePath: 'chromium' // Ganti sesuai path Chromium di Termux
+  });
 
-  const browser = await puppeteer.launch({ headless: true });
   const page = await browser.newPage();
-  await page.goto(SITE_URL, { waitUntil: 'networkidle2' });
+  console.log(`🔁 Mulai klaim untuk wallet: ${wallet}`);
+  await page.goto(URL_FAUCET, { waitUntil: 'networkidle2' });
 
-  try {
-    // Input wallet address
-    await page.type('input[name="address"]', wallet, { delay: 50 });
+  await page.waitForSelector('input[name="wallet"]');
+  await page.type('input[name="wallet"]', wallet);
 
-    // Tunggu iframe hcaptcha muncul
-    await page.waitForSelector('iframe[src*="hcaptcha.com"]', { timeout: 10000 });
-    const frame = await page.$('iframe[src*="hcaptcha.com"]');
-    const src = await frame.evaluate((el) => el.getAttribute('src'));
-    const sitekey = new URL(src).searchParams.get('sitekey');
+  console.log('🔍 Menyelesaikan hCaptcha...');
+  await page.solveRecaptchas();
 
-    // Solve captcha
-    const token = await solveCaptcha(sitekey, SITE_URL);
+  console.log('🚀 Submit klaim...');
+  await page.click('button[type="submit"]');
+  await page.waitForTimeout(5000);
 
-    // Inject token ke form
-    await page.evaluate((token) => {
-      document.querySelector('[name="h-captcha-response"]').style.display = 'block';
-      document.querySelector('[name="h-captcha-response"]').value = token;
-    }, token);
-
-    // Submit form
-    const button = await page.$('button[type="submit"]');
-    await button.click();
-
-    // Tunggu hasil klaim
-    await page.waitForTimeout(5000);
-    console.log(`[✓] Klaim selesai untuk ${wallet}`);
-  } catch (err) {
-    console.error(`[x] Gagal klaim untuk ${wallet}:`, err.message);
-  }
-
+  console.log(`✅ Klaim selesai untuk: ${wallet}\n`);
   await browser.close();
 }
 
-// Baca wallet list
-async function main() {
-  const wallets = fs.readFileSync('wallets.txt', 'utf-8').split('\n').filter(Boolean);
-
-  for (const wallet of wallets) {
-    await claimFaucet(wallet);
-    await delay(DELAY_MS);
+// Jalankan untuk semua wallet
+(async () => {
+  for (const wallet of WALLET_LIST) {
+    try {
+      await claimFaucet(wallet);
+      await new Promise(resolve => setTimeout(resolve, 10000)); // jeda 10 detik antar wallet
+    } catch (err) {
+      console.error(`❌ Gagal klaim untuk ${wallet}:`, err.message);
+    }
   }
-}
-
-main();
+})();
